@@ -118,7 +118,7 @@ namespace QueryCache
 				}
 				catch
 				{
-					Console.WriteLine("Cannot send SourceEngineQuery!");
+					//Console.WriteLine("Cannot send SourceEngineQuery!");
 					return false;
 				}
 			}
@@ -130,7 +130,7 @@ namespace QueryCache
 				}
 				catch
 				{
-					Console.WriteLine("Cannot send BuildRequest!");
+					//Console.WriteLine("Cannot send BuildRequest!");
 					return false;
 				}
 			}
@@ -143,7 +143,7 @@ namespace QueryCache
 			}
 			catch
 			{
-				Console.WriteLine("Cannot Receive SourceEngineQuery!");
+				//Console.WriteLine("Cannot Receive SourceEngineQuery!");
 				return false;
 			}
 
@@ -179,7 +179,7 @@ namespace QueryCache
 								}
 								catch
 								{
-									Console.WriteLine("Cannot Receive rules list header!");
+									//Console.WriteLine("Cannot Receive rules list header!");
 									return false;
 								}
 							}
@@ -202,7 +202,7 @@ namespace QueryCache
 								}
 								catch
 								{
-									Console.WriteLine("Cannot Receive player list header!");
+									//Console.WriteLine("Cannot Receive player list header!");
 									return false;
 								}
 							}
@@ -283,7 +283,7 @@ namespace QueryCache
 			}
 			catch
 			{
-				Console.WriteLine("Cannot bind proxy port!");
+				//Console.WriteLine("Cannot bind proxy port!");
 				return null;
 			}
 			serverSock.Bind(new IPEndPoint(IPAddress.Any, 0));
