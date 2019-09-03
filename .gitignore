@@ -3,3 +3,5 @@
 ################################################################################
 
 /.vs/QueryCache/v16
+/QueryCache/bin/Release
+/QueryCache/obj
