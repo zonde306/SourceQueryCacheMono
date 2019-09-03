@@ -39,8 +39,7 @@ namespace QueryCache
 				requestPacket[7] = 0xFF;
 				requestPacket[8] = 0xFF;
 				byte[] serverResponse = new byte[9];
-				serverSock.SendTimeout = 100;
-				serverSock.ReceiveTimeout = 1000;
+
 				try
 				{
 					serverSock.SendTo(requestPacket, serverEP);
@@ -60,14 +59,11 @@ namespace QueryCache
 				}
 
 				if (serverResponse[4] == 0x41)
-				{ // Check the header to see if the server sent a challenge code.
+				{
+					// Check the header to see if the server sent a challenge code.
 					System.Buffer.BlockCopy(serverResponse, 5, challengeCode, 0, 4); // Copy the challenge code back in to our variable for re-use
 					return challengeCode;
 				}
-				else
-				{
-				}
-
 			}
 			return challengeCode; // Return the cached code we got previously
 		}
@@ -268,6 +264,16 @@ namespace QueryCache
 			serverSock = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
 			publicSock = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
 
+			serverSock.SendTimeout = 100;
+			serverSock.ReceiveTimeout = 1000;
+			serverSock.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.SendTimeout, 100);
+			serverSock.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReceiveTimeout, 1000);
+
+			publicSock.SendTimeout = 1000;
+			publicSock.ReceiveTimeout = 1000;
+			publicSock.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.SendTimeout, 100);
+			publicSock.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReceiveTimeout, 1000);
+
 			IPEndPoint localEndPoint = new IPEndPoint(IPAddress.Any, proxyPort);
 			IPEndPoint sendingIPEP = new IPEndPoint(IPAddress.Any, 0);
 
@@ -345,7 +351,7 @@ namespace QueryCache
 				}
 				catch
 				{
-					requestingEP = null;
+					//requestingEP = null;
 					continue;
 				}
 
@@ -359,7 +365,7 @@ namespace QueryCache
 							// Update our cached values
 							if (!UpdateCache(reqPacket[4]))
 							{
-								requestingEP = null;
+								//requestingEP = null;
 								break;
 							};
 
@@ -398,7 +404,7 @@ namespace QueryCache
 						{
 							if (!UpdateCache(reqPacket[4]))
 							{
-								requestingEP = null;
+								//requestingEP = null;
 								break;
 							};
 
@@ -436,7 +442,7 @@ namespace QueryCache
 						{
 							if (!UpdateCache(reqPacket[4]))
 							{
-								requestingEP = null;
+								//requestingEP = null;
 								break;
 							};
 
