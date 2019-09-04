@@ -2,16 +2,23 @@
 using System.Text;
 using System.Net;
 using System.Net.Sockets;
+using System.Threading;
 
 namespace QueryCache
 {
+	class ThreadWorkerInfo
+	{
+		public EndPoint requestingEP = null;
+		public byte[] reqPacket = new byte[MainClass.maxPacket];
+	};
+
 	class MainClass
 	{
 		private static byte[] infoCache;
 		private static byte[][] playerCache; // Jagged arrays for storing muti-packet responses.
 		private static byte[][] rulesCache;
 		private static byte[] challengeCode = new byte[4];
-		private const int maxPacket = 1400;
+		public const int maxPacket = 1400;
 		private static int infoQueries;
 		private static int otherQueries;
 		private static DateTime lastInfoTime;
@@ -21,6 +28,7 @@ namespace QueryCache
 		private static IPEndPoint serverEP;
 		private static Socket serverSock = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
 		private static Socket publicSock = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
+		private static Mutex updateCacheMutex = new Mutex();
 
 		public static byte[] RequestChallenge()
 		{
@@ -97,6 +105,10 @@ namespace QueryCache
 
 		public static bool UpdateCache(byte queryType)
 		{
+			// we need std::lock_gruad
+			if (!updateCacheMutex.WaitOne(1000))
+				return false;
+
 			if (queryType == 0x54)
 			{
 				// A2S info queries don't need a challenge code
@@ -119,6 +131,7 @@ namespace QueryCache
 				catch
 				{
 					//Console.WriteLine("Cannot send SourceEngineQuery!");
+					updateCacheMutex.ReleaseMutex();
 					return false;
 				}
 			}
@@ -131,6 +144,7 @@ namespace QueryCache
 				catch
 				{
 					//Console.WriteLine("Cannot send BuildRequest!");
+					updateCacheMutex.ReleaseMutex();
 					return false;
 				}
 			}
@@ -144,6 +158,7 @@ namespace QueryCache
 			catch
 			{
 				//Console.WriteLine("Cannot Receive SourceEngineQuery!");
+				updateCacheMutex.ReleaseMutex();
 				return false;
 			}
 
@@ -151,6 +166,7 @@ namespace QueryCache
 			if (recvBuffer[0] == 0xFF && recvBuffer[1] == 0xFF && recvBuffer[2] == 0xFF && recvBuffer[3] == 0xFF && recvBuffer[4] == 0x41)
 			{
 				System.Buffer.BlockCopy(recvBuffer, 5, challengeCode, 0, 4);
+				updateCacheMutex.ReleaseMutex();
 				return UpdateCache(queryType);
 			}
 
@@ -180,10 +196,13 @@ namespace QueryCache
 								catch
 								{
 									//Console.WriteLine("Cannot Receive rules list header!");
+									updateCacheMutex.ReleaseMutex();
 									return false;
 								}
 							}
 						}
+
+						updateCacheMutex.ReleaseMutex();
 						return true;
 					}
 					case 0x44: // Returned player list header
@@ -203,17 +222,20 @@ namespace QueryCache
 								catch
 								{
 									//Console.WriteLine("Cannot Receive player list header!");
+									updateCacheMutex.ReleaseMutex();
 									return false;
 								}
 							}
 						}
 
+						updateCacheMutex.ReleaseMutex();
 						return true;
 					}
 				}
 
 				// We didn't match anything that we can handle :(
 				Console.WriteLine("Receive Unhandled!");
+				updateCacheMutex.ReleaseMutex();
 				return false;
 			}
 			else
@@ -225,6 +247,7 @@ namespace QueryCache
 					{
 						infoCache = new byte[packetLen];
 						System.Buffer.BlockCopy(recvBuffer, 0, infoCache, 0, packetLen);
+						updateCacheMutex.ReleaseMutex();
 						return true;
 					}
 					case 0x44:
@@ -232,6 +255,7 @@ namespace QueryCache
 						playerCache = new byte[1][]; // Initialise our array with a single slot because we only have a single packet to store.
 						playerCache[0] = new byte[packetLen];
 						System.Buffer.BlockCopy(recvBuffer, 0, playerCache[0], 0, packetLen);
+						updateCacheMutex.ReleaseMutex();
 						return true;
 					}
 					case 0x45:
@@ -239,6 +263,7 @@ namespace QueryCache
 						rulesCache = new byte[1][];
 						rulesCache[0] = new byte[packetLen];
 						System.Buffer.BlockCopy(recvBuffer, 0, rulesCache[0], 0, packetLen);
+						updateCacheMutex.ReleaseMutex();
 						return true;
 					}
 				}
@@ -252,9 +277,11 @@ namespace QueryCache
 				*/
 
 				Console.WriteLine("Cannot handle single packet response!");
+				updateCacheMutex.ReleaseMutex();
 				return false;
 			}
 
+			//updateCacheMutex.ReleaseMutex();
 			//return false;
 		}
 
@@ -294,8 +321,143 @@ namespace QueryCache
 			challengeCode[2] = 0xFF;
 			challengeCode[3] = 0xFF;
 
-			Console.WriteLine("Initialization...");
+			int maxThread = 0, maxCompletionPortThreads = 0;
+			ThreadPool.GetMaxThreads(out maxThread, out maxCompletionPortThreads);
+
+			int minThread = 0, minCompletionPortThreads = 0;
+			ThreadPool.GetMinThreads(out minThread, out minCompletionPortThreads);
+
+			Console.WriteLine("Initialization... maxThread {0}/{1}, minThread {2}/{3}",
+				maxThread, maxCompletionPortThreads, minThread, minCompletionPortThreads);
 			return sendingIPEP;
+		}
+
+		public static void HandleQuery(Object data)
+		{
+			ThreadWorkerInfo info = (ThreadWorkerInfo)data;
+			EndPoint requestingEP = info.requestingEP;
+			byte[] reqPacket = info.reqPacket;
+
+			switch (reqPacket[4])
+			{
+				case 0x54: // Info Queries
+				{
+					Interlocked.Increment(ref infoQueries);
+
+					if (lastInfoTime + TimeSpan.FromSeconds(5) <= DateTime.Now)
+					{
+						// Update our cached values
+						if (!UpdateCache(reqPacket[4]))
+							return;
+
+						lastInfoTime = DateTime.Now;
+					}
+
+					// If we get this far, we send our cached values.
+					try
+					{
+						publicSock.SendTo(infoCache, requestingEP);
+					}
+					catch
+					{
+						return;
+					}
+
+					break;
+				}
+				case 0x55: // Player list
+				{
+					Interlocked.Increment(ref otherQueries);
+
+					if (!ChallengeIsValid(reqPacket))
+					{
+						// We check that the client is using the correct challenge code
+						try
+						{
+							publicSock.SendTo(BuildRequest(0x41), requestingEP);
+						}
+						catch
+						{
+							return;
+						}
+						
+						// We'll send the client the correct challenge code to use.
+						break;
+					}
+					if (lastPlayersTime + TimeSpan.FromSeconds(3) <= DateTime.Now)
+					{
+						if (!UpdateCache(reqPacket[4]))
+							return;
+
+						lastPlayersTime = DateTime.Now;
+					}
+					for (int i = 0; i < playerCache.Length; i++)
+					{
+						try
+						{
+							publicSock.SendTo(playerCache[i], requestingEP);
+						}
+						catch
+						{
+							continue;
+						}
+					}
+					break;
+				}
+				case 0x56: //Rules list
+				{
+					Interlocked.Increment(ref otherQueries);
+
+					if (!ChallengeIsValid(reqPacket))
+					{
+						try
+						{
+							publicSock.SendTo(BuildRequest(0x41), requestingEP);
+						}
+						catch
+						{
+							return;
+						}
+						break;
+					}
+					if (lastRulesTime + TimeSpan.FromSeconds(10) <= DateTime.Now)
+					{
+						if (!UpdateCache(reqPacket[4]))
+							return;
+
+						lastRulesTime = DateTime.Now;
+					}
+					for (int i = 0; i < rulesCache.Length; i++)
+					{
+						try
+						{
+							publicSock.SendTo(rulesCache[i], requestingEP);
+						}
+						catch
+						{
+							continue;
+						}
+					}
+					break;
+				}
+				case 0x57: // Challenge request
+				{
+					Interlocked.Increment(ref otherQueries);
+
+					try
+					{
+						// Send challenge response.
+						publicSock.SendTo(BuildRequest(0x41), requestingEP);
+					}
+					catch
+					{
+						return;
+					}
+					break;
+				}
+			}
+
+			return;
 		}
 
 		public static void Main(string[] args)
@@ -325,7 +487,12 @@ namespace QueryCache
 				Environment.Exit(4);
 			}
 
-			EndPoint requestingEP = null;
+			EndPoint requestingEP = Init(localPort, targetIP, targetPort);
+			if (requestingEP == null)
+			{
+				Console.WriteLine("Cannot bind proxy port!");
+				Environment.Exit(4);
+			}
 
 			// Give our time trackers an initial time
 			lastInfoTime = DateTime.Now - TimeSpan.FromSeconds(30);
@@ -336,14 +503,6 @@ namespace QueryCache
 			//// Main query receiving loop
 			while (true)
 			{
-				if (requestingEP == null)
-					requestingEP = Init(localPort, targetIP, targetPort);
-				if (requestingEP == null)
-				{
-					Console.WriteLine("Cannot bind proxy port!");
-					Environment.Exit(4);
-				}
-
 				byte[] reqPacket = new byte[maxPacket];
 				try
 				{
@@ -351,138 +510,25 @@ namespace QueryCache
 				}
 				catch
 				{
-					//requestingEP = null;
 					continue;
 				}
 
-				switch (reqPacket[4])
+				ThreadWorkerInfo info = new ThreadWorkerInfo();
+				info.reqPacket = reqPacket;
+				info.requestingEP = requestingEP;
+				ThreadPool.QueueUserWorkItem(HandleQuery, info);
+
+				if (DateTime.Now.AddSeconds(-10) >= lastPrint)
 				{
-					case 0x54: // Info Queries
-					{
-						infoQueries++;
-						if (lastInfoTime + TimeSpan.FromSeconds(5) <= DateTime.Now)
-						{
-							// Update our cached values
-							if (!UpdateCache(reqPacket[4]))
-							{
-								//requestingEP = null;
-								break;
-							};
+					int workerThreads = 0, completionPortThreads = 0;
+					ThreadPool.GetAvailableThreads(out workerThreads, out completionPortThreads);
 
-							// Successful update means we reset the timer
-							lastInfoTime = DateTime.Now;
-						}
+					Console.WriteLine("{0} info queries and {1} other queries in last {2} seconds, availability {3}/{4}",
+						infoQueries, otherQueries, (DateTime.Now - lastPrint).Seconds,
+						workerThreads, completionPortThreads);
 
-						// If we get this far, we send our cached values.
-						try
-						{
-							publicSock.SendTo(infoCache, requestingEP);
-						}
-						catch
-						{
-							continue;
-						}
-						break;
-					}
-					case 0x55: // Player list
-					{
-						otherQueries++;
-						if (!ChallengeIsValid(reqPacket))
-						{
-							// We check that the client is using the correct challenge code
-							try
-							{
-								publicSock.SendTo(BuildRequest(0x41), requestingEP);
-							}
-							catch
-							{
-								continue;
-							}// We'll send the client the correct challenge code to use.
-							break;
-						}
-						if (lastPlayersTime + TimeSpan.FromSeconds(3) <= DateTime.Now)
-						{
-							if (!UpdateCache(reqPacket[4]))
-							{
-								//requestingEP = null;
-								break;
-							};
-
-							lastPlayersTime = DateTime.Now;
-						}
-						for (int i = 0; i < playerCache.Length; i++)
-						{
-							try
-							{
-								publicSock.SendTo(playerCache[i], requestingEP);
-							}
-							catch
-							{
-								continue;
-							}
-						}
-						break;
-					}
-					case 0x56: //Rules list
-					{
-						otherQueries++;
-						if (!ChallengeIsValid(reqPacket))
-						{
-							try
-							{
-								publicSock.SendTo(BuildRequest(0x41), requestingEP);
-							}
-							catch
-							{
-								continue;
-							}
-							break;
-						}
-						if (lastRulesTime + TimeSpan.FromSeconds(10) <= DateTime.Now)
-						{
-							if (!UpdateCache(reqPacket[4]))
-							{
-								//requestingEP = null;
-								break;
-							};
-
-							lastRulesTime = DateTime.Now;
-						}
-						for (int i = 0; i < rulesCache.Length; i++)
-						{
-							try
-							{
-								publicSock.SendTo(rulesCache[i], requestingEP);
-							}
-							catch
-							{
-								continue;
-							}
-						}
-						break;
-					}
-					case 0x57: // Challenge request
-					{
-						otherQueries++;
-						try
-						{
-							publicSock.SendTo(BuildRequest(0x41), requestingEP); // Send challenge response.
-						}
-						catch
-						{
-							continue;
-						}
-						break;
-					}
-				}
-
-				if ((DateTime.Now.AddSeconds(-10) >= lastPrint))
-				{
-					Console.WriteLine("{0} info queries and {1} other queries in last {2} seconds",
-						infoQueries, otherQueries, (DateTime.Now - lastPrint).Seconds);
-
-					infoQueries = 0;
-					otherQueries = 0;
+					Interlocked.Exchange(ref infoQueries, 0);
+					Interlocked.Exchange(ref otherQueries, 0);
 					lastPrint = DateTime.Now;
 				}
 			}
