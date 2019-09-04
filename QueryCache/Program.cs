@@ -28,7 +28,12 @@ namespace QueryCache
 		private static IPEndPoint serverEP;
 		private static Socket serverSock = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
 		private static Socket publicSock = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
-		private static Mutex updateCacheMutex = new Mutex();
+		private static ReaderWriterLock infoCacheLock = new ReaderWriterLock();
+		private static ReaderWriterLock playerCacheLock = new ReaderWriterLock();
+		private static ReaderWriterLock rulesCacheLock = new ReaderWriterLock();
+		private static Mutex updateInfoCacheLock = new Mutex();
+		private static Mutex updatePlayerCacheLock = new Mutex();
+		private static Mutex updateRulesCacheLock = new Mutex();
 
 		public static byte[] RequestChallenge()
 		{
@@ -105,10 +110,6 @@ namespace QueryCache
 
 		public static bool UpdateCache(byte queryType)
 		{
-			// we need std::lock_gruad
-			if (!updateCacheMutex.WaitOne(1000))
-				return false;
-
 			if (queryType == 0x54)
 			{
 				// A2S info queries don't need a challenge code
@@ -130,8 +131,7 @@ namespace QueryCache
 				}
 				catch
 				{
-					//Console.WriteLine("Cannot send SourceEngineQuery!");
-					updateCacheMutex.ReleaseMutex();
+					Console.WriteLine("Cannot send info query!");
 					return false;
 				}
 			}
@@ -143,8 +143,7 @@ namespace QueryCache
 				}
 				catch
 				{
-					//Console.WriteLine("Cannot send BuildRequest!");
-					updateCacheMutex.ReleaseMutex();
+					Console.WriteLine("Cannot send other query!");
 					return false;
 				}
 			}
@@ -158,7 +157,6 @@ namespace QueryCache
 			catch
 			{
 				//Console.WriteLine("Cannot Receive SourceEngineQuery!");
-				updateCacheMutex.ReleaseMutex();
 				return false;
 			}
 
@@ -166,7 +164,6 @@ namespace QueryCache
 			if (recvBuffer[0] == 0xFF && recvBuffer[1] == 0xFF && recvBuffer[2] == 0xFF && recvBuffer[3] == 0xFF && recvBuffer[4] == 0x41)
 			{
 				System.Buffer.BlockCopy(recvBuffer, 5, challengeCode, 0, 4);
-				updateCacheMutex.ReleaseMutex();
 				return UpdateCache(queryType);
 			}
 
@@ -179,63 +176,76 @@ namespace QueryCache
 					// The packet type header will be at this position for the first packet.
 					case 0x45: // Returned rules list header
 					{
-						// Initialise our array with same size as the number of packets
-						rulesCache = new byte[packetCount][];
-						for (int i = 0; i < packetCount; i++)
+						try
 						{
-							rulesCache[i] = new byte[packetLen];
-							System.Buffer.BlockCopy(recvBuffer, 0, rulesCache[i], 0, packetLen); // Dump our packet contents in to its place
-							if (i < packetCount - 1)
+							rulesCacheLock.AcquireWriterLock(3000);
+
+							// Initialise our array with same size as the number of packets
+							rulesCache = new byte[packetCount][];
+							for (int i = 0; i < packetCount; i++)
 							{
-								// Get ready to receive next packet if this isn't the last iteration.
-								recvBuffer = new byte[maxPacket];
-								try
+								rulesCache[i] = new byte[packetLen];
+								System.Buffer.BlockCopy(recvBuffer, 0, rulesCache[i], 0, packetLen); // Dump our packet contents in to its place
+								if (i < packetCount - 1)
 								{
-									packetLen = serverSock.Receive(recvBuffer);
-								}
-								catch
-								{
-									//Console.WriteLine("Cannot Receive rules list header!");
-									updateCacheMutex.ReleaseMutex();
-									return false;
+									// Get ready to receive next packet if this isn't the last iteration.
+									recvBuffer = new byte[maxPacket];
+									try
+									{
+										packetLen = serverSock.Receive(recvBuffer);
+									}
+									catch
+									{
+										//Console.WriteLine("Cannot Receive rules list header!");
+										return false;
+									}
 								}
 							}
-						}
 
-						updateCacheMutex.ReleaseMutex();
+							rulesCacheLock.ReleaseWriterLock();
+						}
+						catch(ApplicationException)
+						{ }
+
 						return true;
 					}
 					case 0x44: // Returned player list header
 					{
-						playerCache = new byte[packetCount][];
-						for (int i = 0; i < packetCount; i++)
+						try
 						{
-							playerCache[i] = new byte[packetLen];
-							System.Buffer.BlockCopy(recvBuffer, 0, playerCache[i], 0, packetLen);
-							if (i < packetCount - 1)
+							playerCacheLock.AcquireWriterLock(3000);
+
+							playerCache = new byte[packetCount][];
+							for (int i = 0; i < packetCount; i++)
 							{
-								recvBuffer = new byte[maxPacket];
-								try
+								playerCache[i] = new byte[packetLen];
+								System.Buffer.BlockCopy(recvBuffer, 0, playerCache[i], 0, packetLen);
+								if (i < packetCount - 1)
 								{
-									packetLen = serverSock.Receive(recvBuffer);
-								}
-								catch
-								{
-									//Console.WriteLine("Cannot Receive player list header!");
-									updateCacheMutex.ReleaseMutex();
-									return false;
+									recvBuffer = new byte[maxPacket];
+									try
+									{
+										packetLen = serverSock.Receive(recvBuffer);
+									}
+									catch
+									{
+										//Console.WriteLine("Cannot Receive player list header!");
+										return false;
+									}
 								}
 							}
-						}
 
-						updateCacheMutex.ReleaseMutex();
+							playerCacheLock.ReleaseWriterLock();
+						}
+						catch(ApplicationException)
+						{ }
+
 						return true;
 					}
 				}
 
 				// We didn't match anything that we can handle :(
 				Console.WriteLine("Receive Unhandled!");
-				updateCacheMutex.ReleaseMutex();
 				return false;
 			}
 			else
@@ -245,25 +255,52 @@ namespace QueryCache
 				{
 					case 0x49:
 					{
-						infoCache = new byte[packetLen];
-						System.Buffer.BlockCopy(recvBuffer, 0, infoCache, 0, packetLen);
-						updateCacheMutex.ReleaseMutex();
+						try
+						{
+							infoCacheLock.AcquireWriterLock(3000);
+
+							infoCache = new byte[packetLen];
+							System.Buffer.BlockCopy(recvBuffer, 0, infoCache, 0, packetLen);
+
+							infoCacheLock.ReleaseWriterLock();
+						}
+						catch(ApplicationException)
+						{ }
+
 						return true;
 					}
 					case 0x44:
 					{
-						playerCache = new byte[1][]; // Initialise our array with a single slot because we only have a single packet to store.
-						playerCache[0] = new byte[packetLen];
-						System.Buffer.BlockCopy(recvBuffer, 0, playerCache[0], 0, packetLen);
-						updateCacheMutex.ReleaseMutex();
+						try
+						{
+							playerCacheLock.AcquireWriterLock(3000);
+
+							playerCache = new byte[1][]; // Initialise our array with a single slot because we only have a single packet to store.
+							playerCache[0] = new byte[packetLen];
+							System.Buffer.BlockCopy(recvBuffer, 0, playerCache[0], 0, packetLen);
+
+							playerCacheLock.ReleaseWriterLock();
+						}
+						catch(ApplicationException)
+						{ }
+
 						return true;
 					}
 					case 0x45:
 					{
-						rulesCache = new byte[1][];
-						rulesCache[0] = new byte[packetLen];
-						System.Buffer.BlockCopy(recvBuffer, 0, rulesCache[0], 0, packetLen);
-						updateCacheMutex.ReleaseMutex();
+						try
+						{
+							rulesCacheLock.AcquireWriterLock(3000);
+
+							rulesCache = new byte[1][];
+							rulesCache[0] = new byte[packetLen];
+							System.Buffer.BlockCopy(recvBuffer, 0, rulesCache[0], 0, packetLen);
+
+							rulesCacheLock.ReleaseWriterLock();
+						}
+						catch(ApplicationException)
+						{ }
+
 						return true;
 					}
 				}
@@ -277,11 +314,9 @@ namespace QueryCache
 				*/
 
 				Console.WriteLine("Cannot handle single packet response!");
-				updateCacheMutex.ReleaseMutex();
 				return false;
 			}
 
-			//updateCacheMutex.ReleaseMutex();
 			//return false;
 		}
 
@@ -346,22 +381,35 @@ namespace QueryCache
 
 					if (lastInfoTime + TimeSpan.FromSeconds(5) <= DateTime.Now)
 					{
-						// Update our cached values
-						if (!UpdateCache(reqPacket[4]))
-							return;
+						if (updateInfoCacheLock.WaitOne(100))
+						{
+							// Update our cached values
+							if (!UpdateCache(reqPacket[4]))
+								return;
 
-						lastInfoTime = DateTime.Now;
+							lastInfoTime = DateTime.Now;
+							updateInfoCacheLock.ReleaseMutex();
+						}
 					}
 
 					// If we get this far, we send our cached values.
 					try
 					{
-						publicSock.SendTo(infoCache, requestingEP);
+						infoCacheLock.AcquireReaderLock(100);
+
+						try
+						{
+							publicSock.SendTo(infoCache, requestingEP);
+						}
+						catch
+						{
+							return;
+						}
+
+						infoCacheLock.ReleaseReaderLock();
 					}
-					catch
-					{
-						return;
-					}
+					catch(ApplicationException)
+					{ }
 
 					break;
 				}
@@ -384,24 +432,40 @@ namespace QueryCache
 						// We'll send the client the correct challenge code to use.
 						break;
 					}
+
 					if (lastPlayersTime + TimeSpan.FromSeconds(3) <= DateTime.Now)
 					{
-						if (!UpdateCache(reqPacket[4]))
-							return;
+						if (updatePlayerCacheLock.WaitOne(100))
+						{
+							if (!UpdateCache(reqPacket[4]))
+								return;
 
-						lastPlayersTime = DateTime.Now;
+							lastPlayersTime = DateTime.Now;
+							updatePlayerCacheLock.ReleaseMutex();
+						}
 					}
-					for (int i = 0; i < playerCache.Length; i++)
+
+					try
 					{
-						try
+						playerCacheLock.AcquireReaderLock(100);
+
+						for (int i = 0; i < playerCache.Length; i++)
 						{
-							publicSock.SendTo(playerCache[i], requestingEP);
+							try
+							{
+								publicSock.SendTo(playerCache[i], requestingEP);
+							}
+							catch
+							{
+								continue;
+							}
 						}
-						catch
-						{
-							continue;
-						}
+
+						playerCacheLock.ReleaseReaderLock();
 					}
+					catch(ApplicationException)
+					{ }
+
 					break;
 				}
 				case 0x56: //Rules list
@@ -420,24 +484,40 @@ namespace QueryCache
 						}
 						break;
 					}
+
 					if (lastRulesTime + TimeSpan.FromSeconds(10) <= DateTime.Now)
 					{
-						if (!UpdateCache(reqPacket[4]))
-							return;
+						if (updateRulesCacheLock.WaitOne(100))
+						{
+							if (!UpdateCache(reqPacket[4]))
+								return;
 
-						lastRulesTime = DateTime.Now;
+							lastRulesTime = DateTime.Now;
+							updateRulesCacheLock.ReleaseMutex();
+						}
 					}
-					for (int i = 0; i < rulesCache.Length; i++)
+
+					try
 					{
-						try
+						rulesCacheLock.AcquireReaderLock(100);
+
+						for (int i = 0; i < rulesCache.Length; i++)
 						{
-							publicSock.SendTo(rulesCache[i], requestingEP);
+							try
+							{
+								publicSock.SendTo(rulesCache[i], requestingEP);
+							}
+							catch
+							{
+								continue;
+							}
 						}
-						catch
-						{
-							continue;
-						}
+
+						rulesCacheLock.ReleaseReaderLock();
 					}
+					catch(ApplicationException)
+					{ }
+
 					break;
 				}
 				case 0x57: // Challenge request
