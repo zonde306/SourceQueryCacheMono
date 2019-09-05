@@ -21,6 +21,8 @@ namespace QueryCache
 		public const int maxPacket = 1400;
 		private static int infoQueries;
 		private static int otherQueries;
+		private static int recvInfoQueries;
+		private static int recvOtherQueries;
 		private static DateTime lastInfoTime;
 		private static DateTime lastPlayersTime;
 		private static DateTime lastRulesTime;
@@ -197,6 +199,7 @@ namespace QueryCache
 									catch
 									{
 										//Console.WriteLine("Cannot Receive rules list header!");
+										rulesCacheLock.ReleaseWriterLock();
 										return false;
 									}
 								}
@@ -207,6 +210,7 @@ namespace QueryCache
 						catch(ApplicationException)
 						{ }
 
+						//Console.WriteLine("RuleList cached");
 						return true;
 					}
 					case 0x44: // Returned player list header
@@ -230,11 +234,13 @@ namespace QueryCache
 									catch
 									{
 										//Console.WriteLine("Cannot Receive player list header!");
+										playerCacheLock.ReleaseWriterLock();
 										return false;
 									}
 								}
 							}
 
+							//Console.WriteLine("PlayerList cached");
 							playerCacheLock.ReleaseWriterLock();
 						}
 						catch(ApplicationException)
@@ -259,14 +265,20 @@ namespace QueryCache
 						{
 							infoCacheLock.AcquireWriterLock(3000);
 
-							infoCache = new byte[packetLen];
-							System.Buffer.BlockCopy(recvBuffer, 0, infoCache, 0, packetLen);
-
-							infoCacheLock.ReleaseWriterLock();
+							try
+							{
+								infoCache = new byte[packetLen];
+								System.Buffer.BlockCopy(recvBuffer, 0, infoCache, 0, packetLen);
+							}
+							finally
+							{
+								infoCacheLock.ReleaseWriterLock();
+							}
 						}
 						catch(ApplicationException)
 						{ }
 
+						//Console.WriteLine("Info cached");
 						return true;
 					}
 					case 0x44:
@@ -275,15 +287,21 @@ namespace QueryCache
 						{
 							playerCacheLock.AcquireWriterLock(3000);
 
-							playerCache = new byte[1][]; // Initialise our array with a single slot because we only have a single packet to store.
-							playerCache[0] = new byte[packetLen];
-							System.Buffer.BlockCopy(recvBuffer, 0, playerCache[0], 0, packetLen);
-
-							playerCacheLock.ReleaseWriterLock();
+							try
+							{
+								playerCache = new byte[1][]; // Initialise our array with a single slot because we only have a single packet to store.
+								playerCache[0] = new byte[packetLen];
+								System.Buffer.BlockCopy(recvBuffer, 0, playerCache[0], 0, packetLen);
+							}
+							finally
+							{
+								playerCacheLock.ReleaseWriterLock();
+							}
 						}
 						catch(ApplicationException)
 						{ }
 
+						//Console.WriteLine("Player cached");
 						return true;
 					}
 					case 0x45:
@@ -292,15 +310,21 @@ namespace QueryCache
 						{
 							rulesCacheLock.AcquireWriterLock(3000);
 
-							rulesCache = new byte[1][];
-							rulesCache[0] = new byte[packetLen];
-							System.Buffer.BlockCopy(recvBuffer, 0, rulesCache[0], 0, packetLen);
-
-							rulesCacheLock.ReleaseWriterLock();
+							try
+							{
+								rulesCache = new byte[1][];
+								rulesCache[0] = new byte[packetLen];
+								System.Buffer.BlockCopy(recvBuffer, 0, rulesCache[0], 0, packetLen);
+							}
+							finally
+							{
+								rulesCacheLock.ReleaseWriterLock();
+							}
 						}
 						catch(ApplicationException)
 						{ }
 
+						//Console.WriteLine("Rule cached");
 						return true;
 					}
 				}
@@ -400,13 +424,16 @@ namespace QueryCache
 						try
 						{
 							publicSock.SendTo(infoCache, requestingEP);
+							Interlocked.Increment(ref recvInfoQueries);
 						}
 						catch
 						{
 							return;
 						}
-
-						infoCacheLock.ReleaseReaderLock();
+						finally
+						{
+							infoCacheLock.ReleaseReaderLock();
+						}
 					}
 					catch(ApplicationException)
 					{ }
@@ -449,6 +476,7 @@ namespace QueryCache
 					{
 						playerCacheLock.AcquireReaderLock(100);
 
+						bool success = true;
 						for (int i = 0; i < playerCache.Length; i++)
 						{
 							try
@@ -457,9 +485,13 @@ namespace QueryCache
 							}
 							catch
 							{
-								continue;
+								success = false;
+								break;
 							}
 						}
+
+						if(success)
+							Interlocked.Increment(ref recvOtherQueries);
 
 						playerCacheLock.ReleaseReaderLock();
 					}
@@ -501,6 +533,7 @@ namespace QueryCache
 					{
 						rulesCacheLock.AcquireReaderLock(100);
 
+						bool success = true;
 						for (int i = 0; i < rulesCache.Length; i++)
 						{
 							try
@@ -509,9 +542,13 @@ namespace QueryCache
 							}
 							catch
 							{
-								continue;
+								success = false;
+								break;
 							}
 						}
+
+						if(success)
+							Interlocked.Increment(ref recvOtherQueries);
 
 						rulesCacheLock.ReleaseReaderLock();
 					}
@@ -528,6 +565,7 @@ namespace QueryCache
 					{
 						// Send challenge response.
 						publicSock.SendTo(BuildRequest(0x41), requestingEP);
+						Interlocked.Increment(ref recvOtherQueries);
 					}
 					catch
 					{
@@ -603,12 +641,15 @@ namespace QueryCache
 					int workerThreads = 0, completionPortThreads = 0;
 					ThreadPool.GetAvailableThreads(out workerThreads, out completionPortThreads);
 
-					Console.WriteLine("{0} info queries and {1} other queries in last {2} seconds, availability {3}/{4}",
-						infoQueries, otherQueries, (DateTime.Now - lastPrint).Seconds,
+					Console.WriteLine("{0}/{1} info queries and {2}/{3} other queries in last {4} seconds, availability {5}/{6}",
+						recvInfoQueries, infoQueries, recvOtherQueries, otherQueries,
+						(DateTime.Now - lastPrint).Seconds,
 						workerThreads, completionPortThreads);
 
 					Interlocked.Exchange(ref infoQueries, 0);
 					Interlocked.Exchange(ref otherQueries, 0);
+					Interlocked.Exchange(ref recvInfoQueries, 0);
+					Interlocked.Exchange(ref recvOtherQueries, 0);
 					lastPrint = DateTime.Now;
 				}
 			}
