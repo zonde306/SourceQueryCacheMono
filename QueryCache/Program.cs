@@ -3,6 +3,8 @@ using System.Text;
 using System.Net;
 using System.Net.Sockets;
 using System.Threading;
+using System.Collections.Generic;
+using System.IO;
 
 namespace QueryCache
 {
@@ -19,17 +21,21 @@ namespace QueryCache
 		private static byte[][] rulesCache;
 		private static byte[] challengeCode = new byte[4];
 		public const int maxPacket = 1400;
+
 		private static int infoQueries;
 		private static int otherQueries;
 		private static int recvInfoQueries;
 		private static int recvOtherQueries;
+
 		private static DateTime lastInfoTime;
 		private static DateTime lastPlayersTime;
 		private static DateTime lastRulesTime;
 		private static DateTime lastPrint;
+
 		private static IPEndPoint serverEP;
 		private static Socket serverSock = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
 		private static Socket publicSock = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
+
 		private static ReaderWriterLock infoCacheLock = new ReaderWriterLock();
 		private static ReaderWriterLock playerCacheLock = new ReaderWriterLock();
 		private static ReaderWriterLock rulesCacheLock = new ReaderWriterLock();
@@ -131,9 +137,9 @@ namespace QueryCache
 				{
 					serverSock.SendTo(queryStringBytes, serverEP);
 				}
-				catch
+				catch(Exception e)
 				{
-					Console.WriteLine("Cannot send info query!");
+					Console.WriteLine("Cannot send info query! {0} with {1}", e.Message, serverEP.ToString());
 					return false;
 				}
 			}
@@ -143,9 +149,9 @@ namespace QueryCache
 				{
 					serverSock.SendTo(BuildRequest(queryType), serverEP); // Every other query type will be sent with a challenge code
 				}
-				catch
+				catch(Exception e)
 				{
-					Console.WriteLine("Cannot send other query!");
+					Console.WriteLine("Cannot send other query! {0} with {1}", e.Message, serverEP.ToString());
 					return false;
 				}
 			}
@@ -367,9 +373,9 @@ namespace QueryCache
 			{
 				publicSock.Bind(localEndPoint);
 			}
-			catch
+			catch(Exception e)
 			{
-				//Console.WriteLine("Cannot bind proxy port!");
+				Console.WriteLine("Cannot bind proxy port! {0}", e.Message);
 				return null;
 			}
 			serverSock.Bind(new IPEndPoint(IPAddress.Any, 0));
@@ -388,6 +394,8 @@ namespace QueryCache
 
 			Console.WriteLine("Initialization... maxThread {0}/{1}, minThread {2}/{3}",
 				maxThread, maxCompletionPortThreads, minThread, minCompletionPortThreads);
+			Console.WriteLine("listen: {0}, srcds: {1}:{2}", proxyPort, gameServerIp, gameServerPort);
+
 			return sendingIPEP;
 		}
 
@@ -581,7 +589,7 @@ namespace QueryCache
 		public static void Main(string[] args)
 		{
 			string cmdLine = Environment.GetCommandLineArgs()[0];
-			if (args.Length != 3)
+			if (args.Length < 3)
 			{
 				Console.WriteLine("Usage: " + cmdLine + " <proxy port> <gameserver ip> <gameserver port>");
 				Environment.Exit(1);
@@ -626,7 +634,7 @@ namespace QueryCache
 				{
 					publicSock.ReceiveFrom(reqPacket, ref requestingEP);
 				}
-				catch
+				catch(Exception)
 				{
 					continue;
 				}
@@ -641,10 +649,12 @@ namespace QueryCache
 					int workerThreads = 0, completionPortThreads = 0;
 					ThreadPool.GetAvailableThreads(out workerThreads, out completionPortThreads);
 
-					Console.WriteLine("{0}/{1} info queries and {2}/{3} other queries in last {4} seconds, availability {5}/{6}",
+					Console.WriteLine(
+						"{0}/{1} info queries and {2}/{3} other queries in last {4} seconds, availability {5}/{6}",
 						recvInfoQueries, infoQueries, recvOtherQueries, otherQueries,
 						(DateTime.Now - lastPrint).Seconds,
-						workerThreads, completionPortThreads);
+						workerThreads, completionPortThreads
+					);
 
 					Interlocked.Exchange(ref infoQueries, 0);
 					Interlocked.Exchange(ref otherQueries, 0);
