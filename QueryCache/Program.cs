@@ -3,8 +3,6 @@ using System.Text;
 using System.Net;
 using System.Net.Sockets;
 using System.Threading;
-using System.Collections.Generic;
-using System.IO;
 
 namespace QueryCache
 {
@@ -619,6 +617,11 @@ namespace QueryCache
 				Console.WriteLine("Cannot bind proxy port!");
 				Environment.Exit(4);
 			}
+
+			Console.WriteLine(
+				"iptables -t nat -I PREROUTING -p udp -d {0} --dport {1} -m u32 --u32  '0>>22&0x3C@8=0xFFFFFFFF && 0>>22&0x3C@12=0x54536F75 && 0>>22&0x3C@16=0x72636520 && 0>>22&0x3C@20=0x456E6769 && 0>>22&0x3C@24=0x6E652051 && 0>>22&0x3C@28=0x75657279' -j REDIRECT --to-port {2}",
+				args[1], args[2], args[0]
+			);
 
 			// Give our time trackers an initial time
 			lastInfoTime = DateTime.Now - TimeSpan.FromSeconds(30);
